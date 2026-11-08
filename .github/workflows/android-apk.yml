@@ -1,0 +1,81 @@
+name: Android APK
+
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/android-apk.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/android-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build arm64 Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK command-line tools
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android build packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Install Rust and Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Build the Android-native dumper
+        shell: bash
+        run: |
+          NDK="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          LINKER="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$LINKER" >> "$GITHUB_ENV"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
+          cargo build --locked --release --target aarch64-linux-android
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          install -m 755 target/aarch64-linux-android/release/il2cpp_dumper app/src/main/jniLibs/arm64-v8a/libil2cpp_dumper.so
+
+      - name: Build installable APK
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleDebug
+          mkdir -p artifacts
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/com.null.dumper.apk
+
+      - name: Publish APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NullDumper-Android-arm64
+          path: artifacts/com.null.dumper.apk
+          if-no-files-found: error
+          retention-days: 30
