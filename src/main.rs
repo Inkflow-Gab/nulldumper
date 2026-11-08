@@ -58,12 +58,12 @@ const BANNER: &str = r#"
 #[command(
     name = "il2cpp_dumper",
     version,
-    about = "Recover C# from an IL2CPP binary: dump metadata, build DummyDlls, and lift native method bodies back to C#.",
+    about = "Recover C# from IL2CPP binaries or Android APKs: auto-find payloads, dump metadata, and lift native method bodies back to C#.",
     long_about = "Recover C# from an IL2CPP binary.\n\n\
-Reads an IL2CPP binary (ELF, PE, Mach-O, NSO or WASM) plus its global-metadata.dat and writes a\n\
-Dump0/ directory containing dump.cs (every type and method), an optional DummyDll/ .NET assembly,\n\
-and a recovery report. With --cs the native method bodies are recovered as real CIL, so dnSpy /\n\
-ILSpy decompile them to C# exactly like an ordinary managed assembly.\n\n\
+Reads an IL2CPP binary (ELF, PE, Mach-O, NSO or WASM) plus global-metadata.dat, or scans one or\n\
+more Android APKs for libil2cpp.so and global-metadata.dat. Only those payload files are extracted.\n\
+The result is a Dump0/ directory containing dump.cs, optional DummyDll output, and recovery reports.\n\n\
+Use --low-memory for single-threaded processing, or --jobs N to cap worker threads.\n\n\
 The three positionals are the same as --binary / --metadata / --output.",
     after_help = "EXAMPLES:\n  \
 # Full C# recovery of an Android .so into ./Dump0\n  \
@@ -85,6 +85,13 @@ struct Cli {
         help_heading = "Input"
     )]
     il2cpp_binary_flag: Option<String>,
+    /// Android APK input; repeat for split APKs (base.apk plus ABI/config splits).
+    /// The dumper scans for libil2cpp.so and global-metadata.dat and extracts only those files.
+    #[arg(long = "apk", value_name = "APK", action = clap::ArgAction::Append, help_heading = "Input")]
+    apk: Vec<String>,
+    /// Select an Android ABI when the APK set contains multiple native libraries.
+    #[arg(long = "abi", value_name = "ABI", help_heading = "Input")]
+    abi: Option<String>,
     /// Path to global-metadata.dat. Same as the second positional.
     #[arg(
         long = "metadata",
@@ -93,6 +100,12 @@ struct Cli {
         help_heading = "Input"
     )]
     metadata_flag: Option<String>,
+    /// Limit Rayon parallel work to this many threads (default: available CPU cores).
+    #[arg(long = "jobs", value_name = "N", value_parser = clap::value_parser!(usize).range(1..), help_heading = "Performance")]
+    jobs: Option<usize>,
+    /// Conserve memory/CPU by running dump work with one worker thread. Results are unchanged.
+    #[arg(long = "low-memory", help_heading = "Performance")]
+    low_memory: bool,
     /// Directory to write the Dump0/ folder into [default: .]. Same as the
     /// third positional.
     #[arg(
@@ -221,6 +234,44 @@ impl Cli {
             .unwrap_or_else(|| ".".into());
         Ok((binary, metadata, output))
     }
+}
+
+struct TempWorkspace {
+    path: std::path::PathBuf,
+}
+
+impl TempWorkspace {
+    fn create() -> std::result::Result<Self, String> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let base = std::env::temp_dir();
+        for attempt in 0..10u8 {
+            let path = base.join(format!("il2cpp-dumper-{}-{nonce}-{attempt}", process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("Cannot create temporary workspace {}: {error}", path.display())),
+            }
+        }
+        Err("Could not allocate a unique temporary workspace".into())
+    }
+}
+
+impl Drop for TempWorkspace {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn configure_worker_threads(cli: &Cli) -> usize {
+    let available = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
+    let jobs = if cli.low_memory { 1 } else { cli.jobs.unwrap_or(available).min(available.max(1)) };
+    if let Err(error) = rayon::ThreadPoolBuilder::new().num_threads(jobs).build_global() {
+        print_warn(&format!("Could not configure {jobs} worker thread(s): {error}"));
+    }
+    jobs
 }
 
 fn spinner(msg: &str) -> ProgressBar {
@@ -1672,6 +1723,8 @@ fn prompt_pseudo_c_selection(
 fn run() -> Result<()> {
     let start_time = Instant::now();
     let cli = Cli::parse();
+    print_banner();
+    let worker_count = configure_worker_threads(&cli);
     // Hand the dump base to the platform initialisers through the environment:
     // they take the value at the point where the file is recognised as a dump,
     // and the same channel serves the non-CLI front ends.
@@ -1679,10 +1732,61 @@ fn run() -> Result<()> {
         CLI_DUMP_BASE.store(parse_hex_input(base), Ordering::Relaxed);
     }
 
-    let (il2cpp_binary_path, metadata_path, output_dir_arg) =
-        cli.resolve().map_err(il2cpp_dumper::error::Error::Other)?;
+    let mut _apk_workspace: Option<TempWorkspace> = None;
+    let (il2cpp_binary_path, metadata_path, output_dir_arg) = if !cli.apk.is_empty() {
+        if cli.il2cpp_binary_flag.is_some()
+            || cli.metadata_flag.is_some()
+            || cli.binary_pos.is_some()
+            || cli.metadata_pos.is_some()
+        {
+            return Err(il2cpp_dumper::error::Error::Other(
+                "Use either --apk inputs or explicit --binary/--metadata files, not both.".into(),
+            ));
+        }
+        let workspace = TempWorkspace::create().map_err(il2cpp_dumper::error::Error::Other)?;
+        let apk_paths: Vec<std::path::PathBuf> = cli.apk.iter().map(std::path::PathBuf::from).collect();
+        let progress = ProgressBar::new((apk_paths.len() + 2) as u64);
+        progress.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} Inspecting APKs {pos}/{len} {msg} {elapsed:.dim}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"]),
+        );
+        progress.enable_steady_tick(std::time::Duration::from_millis(80));
+        let extracted = il2cpp_dumper::apk::extract_apks(
+            &apk_paths,
+            &workspace.path.join("payload"),
+            cli.abi.as_deref(),
+            |current, total, message| {
+                if total > 0 {
+                    progress.set_position(current.min(total) as u64);
+                }
+                progress.set_message(message.to_owned());
+            },
+        );
+        progress.finish_and_clear();
+        let payload = extracted.map_err(il2cpp_dumper::error::Error::Other)?;
+        print_success(&format!("Selected Android ABI: {}", payload.abi));
+        print_info("Binary in APK", &payload.binary_entry);
+        print_info("Metadata in APK", &payload.metadata_entry);
+        _apk_workspace = Some(workspace);
+        (
+            payload.binary_path.to_string_lossy().into_owned(),
+            payload.metadata_path.to_string_lossy().into_owned(),
+            cli.output_dir_flag
+                .clone()
+                .or_else(|| cli.output_pos.clone())
+                .unwrap_or_else(|| ".".into()),
+        )
+    } else {
+        if cli.abi.is_some() {
+            return Err(il2cpp_dumper::error::Error::Other(
+                "--abi can only be used with --apk.".into(),
+            ));
+        }
+        cli.resolve().map_err(il2cpp_dumper::error::Error::Other)?
+    };
 
-    print_banner();
+    print_info("Worker threads", &worker_count.to_string());
 
     let mut config = if let Some(config_path) = &cli.config {
         Config::load_from_file(config_path).unwrap_or_else(|e| {

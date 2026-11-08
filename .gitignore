@@ -1,4 +1,10 @@
 /target
+.gradle/
+local.properties
+app/build/
+app/.gradle/
+app/src/main/assets/native/
+app/src/main/jniLibs/
 libil2cpp.so
 global-metadata.dat
 libil2cpp39.so

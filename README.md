@@ -72,7 +72,7 @@
 | **Type Group Classification** | ❌ No | ❌ No | ✅ **Yes** |
 | **Enhanced IDA Metadata** | ❌ No | ❌ No | ✅ **Yes** |
 | **ELF Section Header Symbol Fallback** | ❌ No | ✅ Yes | ✅ **Yes** |
-| **GUI** | ❌ No | ✅ WinForms | ✅ **Jetpack Compose + Tauri** |
+| **GUI** | ❌ No | ✅ WinForms | ✅ **Jetpack Compose Android app** |
 | **Embeddable as library** | ❌ No | ❌ No | ✅ **Rust crate / JNI** |
 
 ### ⚡ Performance
@@ -392,6 +392,12 @@ cargo build --release --target aarch64-apple-darwin
 cross build --release --target aarch64-linux-android
 ```
 
+### Android app
+
+The native Android app uses package ID **`com.null.dumper`** and is built by the `Android APK` GitHub Actions workflow. On a pull request or a push to `main`, download the `NullDumper-Android-arm64` workflow artifact; it contains `com.null.dumper.apk` (debug-signed, arm64-v8a). The app lists installed user apps, scans installed APK splits for IL2CPP files, accepts multiple APKs through Android's document picker, runs the bundled dumper locally, and exports completed dumps as ZIP files. Low-memory mode is enabled by default.
+
+The installed-app list requires Android's `QUERY_ALL_PACKAGES` visibility permission. APK contents and dumps remain on-device; export happens only when the user chooses a destination. The app's native engine is arm64-v8a in this initial build.
+
 ---
 
 ## 🔧 Usage
@@ -405,7 +411,26 @@ il2cpp_dumper <il2cpp-binary> <global-metadata.dat> [output-dir]
 il2cpp_dumper libil2cpp.so global-metadata.dat
 il2cpp_dumper GameAssembly.dll global-metadata.dat ./output
 il2cpp_dumper UnityFramework global-metadata.dat
+
+# Scan one APK; automatically finds and extracts just the native library and metadata
+il2cpp_dumper --apk game.apk -o ./output
+
+# Split APK set; ABI is selected automatically (arm64-v8a preferred), or set it explicitly
+il2cpp_dumper --apk base.apk --apk split_config.arm64_v8a.apk --abi arm64-v8a -o ./output
+
+# Keep CPU and memory pressure low without changing dump output
+il2cpp_dumper --apk game.apk --low-memory -o ./output
+# Or cap parallelism at two workers
+il2cpp_dumper --apk game.apk --jobs 2 -o ./output
 ```
+
+### Android APK auto-discovery
+
+Pass one or more APK paths using repeatable `--apk` options. The scanner searches ZIP indexes for `lib/<abi>/libil2cpp.so` and `global-metadata.dat`, reports which entries it selected, and streams only those two files into a temporary workspace. It does **not** unpack resources, DEX files, or the full APK. Progress is shown while archives are scanned and payloads are extracted; invalid archives, missing files, unsupported ABI selections, truncated data, and CRC failures return specific errors. Temporary extracted inputs are removed automatically after the dump finishes.
+
+By default it chooses `arm64-v8a`, then `armeabi-v7a`, legacy `armeabi`, `x86_64`, and `x86`. Use `--abi` to override this for a matching split. Split APKs are supplied as separate `--apk` arguments. If metadata is encrypted or only appears after runtime loading, the APK alone cannot provide the decrypted metadata; use a decrypted `global-metadata.dat` with the regular binary/metadata arguments instead.
+
+`--low-memory` caps Rayon to one worker and preserves all output features; it trades speed for a smaller concurrency footprint. `--jobs N` lets you choose another worker cap. The default uses the available CPU count.
 
 ### Example Output
 ```
@@ -464,6 +489,10 @@ Place `config.json` next to the binary (or pass `--config path/to/config.json`).
 | `--force-dump` | Treat input as a memory dump; prompt for image base |
 | `--dump-static-metadata` | Enable thread-static / FieldRVA export pipeline |
 | `--no-dump-static-metadata` | Disable static metadata export |
+| `--apk <FILE>` | Scan an APK for `libil2cpp.so` and `global-metadata.dat`; repeat for split APKs |
+| `--abi <ABI>` | Select `arm64-v8a`, `armeabi-v7a`, `armeabi`, `x86_64`, or `x86` from the APK set |
+| `--low-memory` | Use one worker thread while preserving the same outputs |
+| `--jobs <N>` | Cap parallel worker threads |
 
 ### Key groups
 
