@@ -28,6 +28,8 @@ use il2cpp_dumper::output::struct_generator::StructGenerator;
 /// optional number would touch more code than it is worth. Set once in `run()`
 /// before any thread is spawned, read once per run in the initialiser.
 static CLI_DUMP_BASE: AtomicU64 = AtomicU64::new(0);
+static CLI_CODE_REGISTRATION: AtomicU64 = AtomicU64::new(0);
+static CLI_METADATA_REGISTRATION: AtomicU64 = AtomicU64::new(0);
 
 const MAGIC_METADATA: u32 = 0xFAB11BAF;
 const MAGIC_ELF: u32 = 0x464C457F;
@@ -145,6 +147,12 @@ struct Cli {
     /// setting ILR_DUMP_BASE, and works without a terminal.
     #[arg(long = "dump-base", value_name = "HEX", help_heading = "Container")]
     dump_base: Option<String>,
+    /// Override the detected ELF CodeRegistration address (hex; use the binary's address space).
+    #[arg(long = "code-registration", value_name = "HEX", value_parser = parse_hex_address, help_heading = "Container")]
+    code_registration: Option<u64>,
+    /// Override the detected ELF MetadataRegistration address (hex; use the binary's address space).
+    #[arg(long = "metadata-registration", value_name = "HEX", value_parser = parse_hex_address, help_heading = "Container")]
+    metadata_registration: Option<u64>,
     /// Method-body output mode: `off`, `assembly`, `csharp`, or `both`.
     /// Preferred over the legacy dumpDisassembly / dumpPseudoC pair in config.json.
     #[arg(
@@ -542,6 +550,19 @@ fn detect_unity_version(data: &[u8]) -> Option<String> {
     best
 }
 
+fn parse_hex_address(input: &str) -> std::result::Result<u64, String> {
+    let trimmed = input
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
+    let address = u64::from_str_radix(trimmed, 16)
+        .map_err(|_| format!("'{input}' is not a valid hexadecimal address"))?;
+    if address == 0 {
+        return Err("Address must be non-zero".into());
+    }
+    Ok(address)
+}
+
 fn validate_hex(input: &String) -> std::result::Result<(), String> {
     let trimmed = input
         .trim()
@@ -733,8 +754,18 @@ fn init_elf(data: Vec<u8>, metadata: &Metadata, config: &Config) -> Result<Il2Cp
     let image_count = metadata.image_defs.len();
 
     let mut helper = elf.get_section_helper(method_count, type_count, image_count);
-    let code_reg = helper.find_code_registration();
-    let metadata_reg = if metadata.variant == MetadataVariant::Codm {
+    let manual_code_reg = CLI_CODE_REGISTRATION.load(Ordering::Relaxed);
+    let manual_metadata_reg = CLI_METADATA_REGISTRATION.load(Ordering::Relaxed);
+    let code_reg = if manual_code_reg != 0 {
+        print_info("Using manual CodeRegistration", &format!("0x{manual_code_reg:X}"));
+        Some(manual_code_reg)
+    } else {
+        helper.find_code_registration()
+    };
+    let metadata_reg = if manual_metadata_reg != 0 {
+        print_info("Using manual MetadataRegistration", &format!("0x{manual_metadata_reg:X}"));
+        Some(manual_metadata_reg)
+    } else if metadata.variant == MetadataVariant::Codm {
         helper
             .find_metadata_registration_codm()
             .or_else(|| helper.find_metadata_registration())
@@ -1736,6 +1767,12 @@ fn run() -> Result<()> {
     if let Some(base) = &cli.dump_base {
         CLI_DUMP_BASE.store(parse_hex_input(base), Ordering::Relaxed);
     }
+    if let Some(address) = cli.code_registration {
+        CLI_CODE_REGISTRATION.store(address, Ordering::Relaxed);
+    }
+    if let Some(address) = cli.metadata_registration {
+        CLI_METADATA_REGISTRATION.store(address, Ordering::Relaxed);
+    }
 
     let mut _apk_workspace: Option<TempWorkspace> = None;
     let (il2cpp_binary_path, metadata_path, output_dir_arg) = if !cli.apk.is_empty() {
@@ -2246,5 +2283,22 @@ fn main() {
         eprintln!("  {} {}", style("✗ ERROR:").red().bold(), style(&e).red());
         eprintln!();
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod cli_address_tests {
+    use super::parse_hex_address;
+
+    #[test]
+    fn parses_registration_addresses_with_or_without_prefix() {
+        assert_eq!(parse_hex_address("0x1234").unwrap(), 0x1234);
+        assert_eq!(parse_hex_address("ABCD").unwrap(), 0xABCD);
+    }
+
+    #[test]
+    fn rejects_invalid_and_zero_registration_addresses() {
+        assert!(parse_hex_address("0").is_err());
+        assert!(parse_hex_address("not-hex").is_err());
     }
 }

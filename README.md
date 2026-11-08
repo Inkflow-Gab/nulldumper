@@ -394,9 +394,11 @@ cross build --release --target aarch64-linux-android
 
 ### Android app
 
-The native Android app uses package ID **`com.null.dumper`** and is built by the `Android APK` GitHub Actions workflow. On a pull request or a push to `main`, download the `NullDumper-Android-arm64` workflow artifact; it contains `com.null.dumper.apk` (debug-signed, arm64-v8a). The app lists installed user apps, scans installed APK splits for IL2CPP files, accepts multiple APKs through Android's document picker, runs the bundled dumper locally, and exports completed dumps as ZIP files. Low-memory mode is enabled by default.
+The native Android app uses package ID **`com.null.dumper`** and is built by the `Android APK` GitHub Actions workflow. On a pull request or a push to `main`, download the `NullDumper-Android-arm64` workflow artifact; it contains `com.null.dumper.apk` (debug-signed, arm64-v8a). The app offers three input routes: choose a user-installed app, import one or more APK/split APK files, or provide a manual native-binary + metadata pair. It lists only user-installed apps and inspects an app's APKs only after the user selects it. Manual mode accepts renamed library files and supports CODM layout, memory-dump base, and known registration-address overrides. Low-memory mode is enabled by default.
 
-The installed-app list requires Android's `QUERY_ALL_PACKAGES` visibility permission. APK contents and dumps remain on-device; export happens only when the user chooses a destination. The app's native engine is arm64-v8a in this initial build.
+The installed-app list requires Android's `QUERY_ALL_PACKAGES` visibility permission, but system and updated-system apps are excluded. The app reads package labels and paths for the list, then opens APK contents only when you choose a user app. APK contents and dumps remain on-device; export happens only when the user chooses a destination. The app's native engine is arm64-v8a in this initial build. Manually importing a metadata file does not decrypt protected metadata: a decrypted file must be supplied by the user.
+
+For reference, [AndnixSH/Il2CppDumper](https://github.com/AndnixSH/Il2CppDumper) documents manual binary/metadata selection and registration-address overrides. [CameroonD/Il2CppMetadataExtractor](https://github.com/CameroonD/Il2CppMetadataExtractor) describes a separate, runtime Frida-based approach for metadata that is encrypted in an APK; it requires attaching to a running app and is not bundled into Null Dumper. Use such tools only on apps and files you are authorized to analyze.
 
 ---
 
@@ -486,7 +488,10 @@ Place `config.json` next to the binary (or pass `--config path/to/config.json`).
 | Flag | Effect |
 |------|--------|
 | `--codm` | Force CODM metadata layout + reloc/fixup paths |
-| `--force-dump` | Treat input as a memory dump; prompt for image base |
+| `--force-dump` | Treat input as a memory dump; pair with `--dump-base <HEX>` for non-interactive runs |
+| `--dump-base <HEX>` | Set the memory dump's runtime base address |
+| `--code-registration <HEX>` | Override the ELF CodeRegistration address after manual analysis |
+| `--metadata-registration <HEX>` | Override the ELF MetadataRegistration address after manual analysis |
 | `--dump-static-metadata` | Enable thread-static / FieldRVA export pipeline |
 | `--no-dump-static-metadata` | Disable static metadata export |
 | `--apk <FILE>` | Scan an APK for `libil2cpp.so` and `global-metadata.dat`; repeat for split APKs |
