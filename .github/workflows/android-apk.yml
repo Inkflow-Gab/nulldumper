@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --console=plain --no-color --stacktrace :app:assembleDebug 2>&1 | tee /tmp/null-dumper-gradle-build.log
+          gradle --no-daemon --console=plain --stacktrace :app:assembleDebug 2>&1 | tee /tmp/null-dumper-gradle-build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           set -e
           if [[ "$BUILD_STATUS" -ne 0 ]]; then
