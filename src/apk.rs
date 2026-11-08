@@ -70,11 +70,11 @@ where
         let entries = read_directory(path)?;
         nested_apk_bundle |= entries.iter().any(|entry| entry.name.to_ascii_lowercase().ends_with(".apk"));
         for entry in entries {
-            if let Some(abi) = library_abi(&entry.name) {
+            if let Some(abi) = library_abi(&entry.name).map(str::to_owned) {
                 binaries.push(Candidate {
                     archive: path.clone(),
                     entry,
-                    abi: Some(abi.to_owned()),
+                    abi: Some(abi),
                 });
             } else if is_metadata_path(&entry.name) {
                 metadata.push(Candidate {
