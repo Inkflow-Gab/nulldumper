@@ -83,7 +83,7 @@ jobs:
           BUILD_STATUS=${PIPESTATUS[0]}
           set -e
           if [[ "$BUILD_STATUS" -ne 0 ]]; then
-            grep -E '(^e: |^\\* What went wrong:|^Execution failed|^FAILURE:|^> Task .* FAILED)' /tmp/null-dumper-gradle-build.log | tail -n 40 | while IFS= read -r line; do
+            grep -E '(^e: |^\\* What went wrong:|^Execution failed|^FAILURE:|^> Task .* FAILED|requires|compiled against|compileSdk|minCompileSdk|AAR metadata|Android [0-9]+ APIs|^  - )' /tmp/null-dumper-gradle-build.log | tail -n 50 | while IFS= read -r line; do
               echo "::error::$line"
             done
             exit "$BUILD_STATUS"
