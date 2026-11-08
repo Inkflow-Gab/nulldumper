@@ -101,7 +101,7 @@ struct Cli {
     )]
     metadata_flag: Option<String>,
     /// Limit Rayon parallel work to this many threads (default: available CPU cores).
-    #[arg(long = "jobs", value_name = "N", value_parser = clap::value_parser!(usize).range(1..), help_heading = "Performance")]
+    #[arg(long = "jobs", value_name = "N", help_heading = "Performance")]
     jobs: Option<usize>,
     /// Conserve memory/CPU by running dump work with one worker thread. Results are unchanged.
     #[arg(long = "low-memory", help_heading = "Performance")]
@@ -1723,6 +1723,11 @@ fn prompt_pseudo_c_selection(
 fn run() -> Result<()> {
     let start_time = Instant::now();
     let cli = Cli::parse();
+    if cli.jobs == Some(0) {
+        return Err(il2cpp_dumper::error::Error::Other(
+            "--jobs must be at least 1".into(),
+        ));
+    }
     print_banner();
     let worker_count = configure_worker_threads(&cli);
     // Hand the dump base to the platform initialisers through the environment:
