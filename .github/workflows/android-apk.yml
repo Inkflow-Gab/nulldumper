@@ -55,6 +55,9 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - name: Cache Rust build products
+        uses: Swatinem/rust-cache@v2
+
       - name: Build the Android-native dumper
         shell: bash
         run: |
@@ -79,11 +82,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/null-dumper-gradle-build.log
+          gradle --no-daemon --console=plain --no-color --stacktrace :app:assembleDebug 2>&1 | tee /tmp/null-dumper-gradle-build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           set -e
           if [[ "$BUILD_STATUS" -ne 0 ]]; then
-            grep -E '(^e: |^\\* What went wrong:|^Execution failed|^FAILURE:|^> Task .* FAILED|requires|compiled against|compileSdk|minCompileSdk|AAR metadata|Android [0-9]+ APIs|^  - )' /tmp/null-dumper-gradle-build.log | tail -n 50 | while IFS= read -r line; do
+            awk '/\\* What went wrong:/{capture=1} capture{print; count++} count >= 35{exit}' /tmp/null-dumper-gradle-build.log | while IFS= read -r line; do
               echo "::error::$line"
             done
             exit "$BUILD_STATUS"
