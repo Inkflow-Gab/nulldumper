@@ -9,6 +9,7 @@ on:
       - "Cargo.lock"
       - "build.gradle.kts"
       - "settings.gradle.kts"
+      - "gradle.properties"
       - ".github/workflows/android-apk.yml"
   push:
     branches: [main]
@@ -19,6 +20,7 @@ on:
       - "Cargo.lock"
       - "build.gradle.kts"
       - "settings.gradle.kts"
+      - "gradle.properties"
       - ".github/workflows/android-apk.yml"
   workflow_dispatch:
 
