@@ -86,9 +86,15 @@ jobs:
           BUILD_STATUS=${PIPESTATUS[0]}
           set -e
           if [[ "$BUILD_STATUS" -ne 0 ]]; then
-            tail -n 40 /tmp/null-dumper-gradle-build.log | while IFS= read -r line; do
-              echo "::error::$line"
-            done
+            if grep -qF 'What went wrong:' /tmp/null-dumper-gradle-build.log; then
+              awk 'index($0, "What went wrong:"){capture=1} capture{print; count++} count >= 40{exit}' /tmp/null-dumper-gradle-build.log | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+            else
+              tail -n 40 /tmp/null-dumper-gradle-build.log | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+            fi
             exit "$BUILD_STATUS"
           fi
           mkdir -p artifacts
